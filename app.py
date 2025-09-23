@@ -30,23 +30,27 @@ with open("mun_PR.json", "r", encoding="utf-8") as f:
 # ======================
 # LIMPEZA DE DADOS
 # ======================
-df = df.dropna(how="all")  # Remove linhas 100% vazias
-df = df.fillna(0)          # Substitui N/A numéricos por 0
+# Remover linhas 100% vazias
+df = df.dropna(how="all")
 
-# Normalizar strings
-df["Município"] = df["Município"].astype(str)
-df["Região"] = df["Região"].astype(str)
-df["STATUS"] = df["STATUS"].astype(str)
-
-# Corrigir coluna de extensão (vírgula como separador decimal, corrigir pontos errados)
+# Corrigir coluna de extensão (vírgula/ponto → float)
 if "Extensão (km)" in df.columns:
     df["Extensão (km)"] = (
         df["Extensão (km)"]
         .astype(str)
-        .str.replace(".", ",")   # uniformiza para vírgula
-        .str.replace(",", ".")   # converte para ponto decimal (Python-friendly)
+        .str.replace(".", ",")   # uniformiza
+        .str.replace(",", ".")   # Python-friendly
     )
     df["Extensão (km)"] = pd.to_numeric(df["Extensão (km)"], errors="coerce").fillna(0)
+
+# Normalizar strings nas colunas principais
+for col in ["Município", "Região", "STATUS"]:
+    if col in df.columns:
+        df[col] = df[col].astype(str)
+
+# Corrigir CodIBGE para int
+if "CodIBGE" in df.columns:
+    df["CodIBGE"] = pd.to_numeric(df["CodIBGE"], errors="coerce").fillna(0).astype(int)
 
 # Converter datas
 if "Previsão Entrega" in df.columns:
@@ -92,9 +96,12 @@ st.divider()
 # ======================
 # GRÁFICO INCREMENTAL
 # ======================
-st.subheader("📈 Entregas Acumuladas (Curva S)")
+st.subheader("📈 Entregas Acumuladas em 2025 (Curva S)")
 
 df_entregues = df_filtered[(df_filtered["STATUS"] == "Entregue") & (df_filtered["Entregue"] != 0)]
+
+# Filtrar somente 2025
+df_entregues = df_entregues[df_entregues["Previsão Entrega"].dt.year == 2025]
 
 if not df_entregues.empty and not df_entregues["Previsão Entrega"].isna().all():
     entregas_por_data = (
@@ -103,8 +110,21 @@ if not df_entregues.empty and not df_entregues["Previsão Entrega"].isna().all()
         .reset_index(name="Qtd")
         .sort_values("Previsão Entrega")
     )
+
+    # Criar calendário completo de 2025
+    calendario_2025 = pd.DataFrame({
+        "Previsão Entrega": pd.date_range("2025-01-01", "2025-12-31", freq="D")
+    })
+
+    # Merge para preencher dias sem entregas
+    entregas_por_data = calendario_2025.merge(
+        entregas_por_data, on="Previsão Entrega", how="left"
+    ).fillna(0)
+
+    entregas_por_data["Qtd"] = entregas_por_data["Qtd"].astype(int)
     entregas_por_data["Acumulado"] = entregas_por_data["Qtd"].cumsum()
 
+    # Gráfico
     fig = px.line(
         entregas_por_data,
         x="Previsão Entrega",
@@ -114,7 +134,7 @@ if not df_entregues.empty and not df_entregues["Previsão Entrega"].isna().all()
     )
     st.plotly_chart(fig, use_container_width=True)
 else:
-    st.info("Nenhuma entrega registrada para os filtros aplicados.")
+    st.info("Nenhuma entrega registrada para 2025 nos filtros aplicados.")
 
 st.divider()
 
@@ -148,18 +168,22 @@ st.divider()
 st.subheader("🗺 Mapa de Municípios com RTVs")
 
 map_data = (
-    df_filtered.groupby(["CodIBGE", "Município"])
+    df_filtered.groupby(["CodIBGE", "Município"], as_index=False)
     .agg({"Extensão (km)": "sum", "STATUS": "count"})
-    .reset_index()
     .rename(columns={"Extensão (km)": "Extensao_km", "STATUS": "Qtd_RTVs"})
 )
 
-# Criar dicionário para merge manual
-map_dict = map_data.set_index("CodIBGE")[["Extensao_km", "Qtd_RTVs"]].to_dict("index")
+# Criar dicionário único
+map_dict = map_data.drop_duplicates("CodIBGE").set_index("CodIBGE")[["Extensao_km", "Qtd_RTVs"]].to_dict("index")
+
+# Detectar campo de código no GeoJSON
+geojson_key = "CD_MUN"
+if not all(geojson_key in f["properties"] for f in geojson["features"]):
+    geojson_key = list(geojson["features"][0]["properties"].keys())[0]
 
 # Injetar atributos no GeoJSON
 for feature in geojson["features"]:
-    cod = int(feature["properties"]["CD_MUN"])
+    cod = int(feature["properties"][geojson_key])
     if cod in map_dict:
         feature["properties"]["Extensao_km"] = float(map_dict[cod]["Extensao_km"])
         feature["properties"]["Qtd_RTVs"] = int(map_dict[cod]["Qtd_RTVs"])
@@ -167,17 +191,14 @@ for feature in geojson["features"]:
         feature["properties"]["Extensao_km"] = 0
         feature["properties"]["Qtd_RTVs"] = 0
 
-# Definir coluna de coloração
 coluna_color = "Extensao_km" if criterio_mapa == "Extensão Total (km)" else "Qtd_RTVs"
 max_val = max([f["properties"][coluna_color] for f in geojson["features"]]) or 1
 
-# Atribuir escala de cor normalizada
 for feature in geojson["features"]:
     val = feature["properties"][coluna_color]
     intensity = int((val / max_val) * 255)
     feature["properties"]["color_value"] = intensity
 
-# Camada Pydeck
 layer = pdk.Layer(
     "GeoJsonLayer",
     geojson,
