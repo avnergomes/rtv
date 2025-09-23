@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.express as px
 import pydeck as pdk
 import json
-import urllib.request
 
 # ======================
 # CONFIGURAÇÃO INICIAL
@@ -38,6 +37,16 @@ df = df.fillna(0)          # Substitui N/A numéricos por 0
 df["Município"] = df["Município"].astype(str)
 df["Região"] = df["Região"].astype(str)
 df["STATUS"] = df["STATUS"].astype(str)
+
+# Corrigir coluna de extensão (vírgula como separador decimal, corrigir pontos errados)
+if "Extensão (km)" in df.columns:
+    df["Extensão (km)"] = (
+        df["Extensão (km)"]
+        .astype(str)
+        .str.replace(".", ",")   # uniformiza para vírgula
+        .str.replace(",", ".")   # converte para ponto decimal (Python-friendly)
+    )
+    df["Extensão (km)"] = pd.to_numeric(df["Extensão (km)"], errors="coerce").fillna(0)
 
 # Converter datas
 if "Previsão Entrega" in df.columns:
@@ -134,7 +143,7 @@ st.plotly_chart(fig_reg, use_container_width=True)
 st.divider()
 
 # ======================
-# MAPA INTERATIVO (sem geopandas)
+# MAPA INTERATIVO
 # ======================
 st.subheader("🗺 Mapa de Municípios com RTVs")
 
@@ -160,8 +169,6 @@ for feature in geojson["features"]:
 
 # Definir coluna de coloração
 coluna_color = "Extensao_km" if criterio_mapa == "Extensão Total (km)" else "Qtd_RTVs"
-
-# Calcular max para normalização
 max_val = max([f["properties"][coluna_color] for f in geojson["features"]]) or 1
 
 # Atribuir escala de cor normalizada
