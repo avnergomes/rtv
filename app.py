@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import pydeck as pdk
 import json
+from PIL import Image
 
 # ======================
 # CONFIGURAÇÃO INICIAL
@@ -56,9 +57,14 @@ if "CodIBGE" in df.columns:
 if "Previsão Entrega" in df.columns:
     df["Previsão Entrega"] = pd.to_datetime(df["Previsão Entrega"], errors="coerce")
 
+# Remover registros sem município ou região
+df = df[df["Município"].notna() & (df["Município"] != "0") & (df["Município"] != "nan")]
+df = df[df["Região"].notna() & (df["Região"] != "0") & (df["Região"] != "nan")]
+
 # ======================
-# SIDEBAR - FILTROS
+# SIDEBAR - LOGO + FILTROS
 # ======================
+st.sidebar.image("logo_idr.png", use_column_width=True)  # Logo no topo da sidebar
 st.sidebar.header("🔎 Filtros")
 
 regioes = st.sidebar.multiselect("Região", options=sorted(df["Região"].unique()))
@@ -99,8 +105,6 @@ st.divider()
 st.subheader("📈 Entregas Acumuladas em 2025 (Curva S)")
 
 df_entregues = df_filtered[(df_filtered["STATUS"] == "Entregue") & (df_filtered["Entregue"] != 0)]
-
-# Filtrar somente 2025
 df_entregues = df_entregues[df_entregues["Previsão Entrega"].dt.year == 2025]
 
 if not df_entregues.empty and not df_entregues["Previsão Entrega"].isna().all():
@@ -154,8 +158,9 @@ with colB:
     st.plotly_chart(fig_pav, use_container_width=True)
 
 st.subheader("🌍 RTVs por Região")
+df_regioes = df_filtered[df_filtered["Região"].notna() & (df_filtered["Região"] != "nan")]
 fig_reg = px.bar(
-    df_filtered.groupby("Região").size().reset_index(name="RTVs"),
+    df_regioes.groupby("Região").size().reset_index(name="RTVs"),
     x="Região", y="RTVs", color="Região"
 )
 st.plotly_chart(fig_reg, use_container_width=True)
@@ -173,17 +178,24 @@ map_data = (
     .rename(columns={"Extensão (km)": "Extensao_km", "STATUS": "Qtd_RTVs"})
 )
 
-# Criar dicionário único
 map_dict = map_data.drop_duplicates("CodIBGE").set_index("CodIBGE")[["Extensao_km", "Qtd_RTVs"]].to_dict("index")
 
-# Detectar campo de código no GeoJSON
-geojson_key = "CD_MUN"
-if not all(geojson_key in f["properties"] for f in geojson["features"]):
-    geojson_key = list(geojson["features"][0]["properties"].keys())[0]
+# Detectar chave correta no GeoJSON
+geojson_keys = list(geojson["features"][0]["properties"].keys())
+geojson_key = None
+for k in geojson_keys:
+    if "CD" in k.upper() or "IBGE" in k.upper():
+        geojson_key = k
+        break
+if geojson_key is None:
+    geojson_key = geojson_keys[0]
 
-# Injetar atributos no GeoJSON
+# Injetar atributos
 for feature in geojson["features"]:
-    cod = int(feature["properties"][geojson_key])
+    try:
+        cod = int(feature["properties"][geojson_key])
+    except:
+        cod = None
     if cod in map_dict:
         feature["properties"]["Extensao_km"] = float(map_dict[cod]["Extensao_km"])
         feature["properties"]["Qtd_RTVs"] = int(map_dict[cod]["Qtd_RTVs"])
