@@ -64,7 +64,7 @@ df = df[df["Região"].notna() & (df["Região"] != "0") & (df["Região"] != "nan"
 # ======================
 # SIDEBAR - LOGO + FILTROS
 # ======================
-st.sidebar.image("IDR_GOV_Seab_V_1.webp", use_column_width=True)  # Logo na sidebar
+st.sidebar.image("IDR_GOV_Seab_V_1.webp", use_container_width=True)  # Logo na sidebar
 st.sidebar.header("🔎 Filtros")
 
 regioes = st.sidebar.multiselect("Região", options=sorted(df["Região"].unique()))
