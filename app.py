@@ -1,18 +1,46 @@
 import copy
 from datetime import datetime
 import json
+import re
 
 import pandas as pd
 import plotly.express as px
 import pydeck as pdk
 import streamlit as st
-from pandas.api.types import is_categorical_dtype
+from pandas.api.types import is_categorical_dtype, is_numeric_dtype
 from plotly.colors import sample_colorscale, sequential
 
 st.set_page_config(page_title="Dashboard RTVs", layout="wide")
 
 URL_SHEET = "https://docs.google.com/spreadsheets/d/1OcX3jxFqnEEKe7wqJVm_pl4QYz3foCNLM1Dnf9aYie4/export?format=xlsx"
 STATUS_ORDER = ["Planejado", "Em Andamento", "Entregue"]
+
+DECIMAL_CANDIDATE_PATTERN = re.compile(
+    r"""
+    -?\s*(?:R\$)?\s*\d{1,3}(?:\.\d{3})*(?:,\d+)?\s*(?:km|m2|m²|m|ha|%)?\s*
+    |
+    -?\s*(?:R\$)?\s*\d+(?:,\d+)?\s*(?:km|m2|m²|m|ha|%)?\s*
+    """,
+    flags=re.IGNORECASE | re.VERBOSE,
+)
+TRAILING_UNIT_PATTERN = re.compile(r"(?i)(km|m2|m²|m|ha|%)$")
+CURRENCY_PATTERN = re.compile(r"(?i)r\$")
+THOUSANDS_SEPARATOR_PATTERN = re.compile(r"(?<=\d)\.(?=\d{3}(?:\D|$))")
+NUMERIC_HINT_KEYWORDS = (
+    "extens",
+    "km",
+    "ha",
+    "valor",
+    "custo",
+    "invest",
+    "qtd",
+    "quant",
+    "area",
+    "metros",
+    "percent",
+    "popul",
+    "indice",
+)
 
 
 @st.cache_data(ttl=600)  # Atualiza a cada 10 minutos
@@ -39,6 +67,49 @@ def format_number(value: float, decimals: int = 0) -> str:
 @st.cache_data
 def convert_df_to_csv(dataframe: pd.DataFrame) -> bytes:
     return dataframe.to_csv(index=False).encode("utf-8")
+
+
+def standardize_decimal_columns(
+    dataframe: pd.DataFrame, decimal_sep: str = ","
+) -> pd.DataFrame:
+    """Convert object columns that contain decimal strings with comma separators."""
+    if dataframe is None:
+        return dataframe
+
+    df_local = dataframe.copy()
+    candidate_columns = df_local.select_dtypes(include=["object", "string"]).columns
+
+    if not len(candidate_columns):
+        return df_local
+
+    for column in candidate_columns:
+        series = df_local[column].astype("string").str.strip()
+        series = series.replace("", pd.NA)
+        sample = series.dropna()
+        if sample.empty:
+            continue
+
+        matches = sample.str.fullmatch(DECIMAL_CANDIDATE_PATTERN)
+        match_ratio = matches.mean() if len(matches) else 0.0
+        column_lower = column.lower()
+        threshold = 0.6
+        if any(keyword in column_lower for keyword in NUMERIC_HINT_KEYWORDS):
+            threshold = 0.3
+        if pd.isna(match_ratio) or match_ratio < threshold:
+            continue
+
+        normalized = series.str.replace("\u00a0", "", regex=False)
+        normalized = normalized.str.replace(CURRENCY_PATTERN, "", regex=True)
+        normalized = normalized.str.replace(TRAILING_UNIT_PATTERN, "", regex=True)
+        normalized = normalized.str.replace(" ", "", regex=False)
+        normalized = normalized.str.replace(THOUSANDS_SEPARATOR_PATTERN, "", regex=True)
+        normalized = normalized.str.replace(decimal_sep, ".", regex=False)
+
+        converted = pd.to_numeric(normalized, errors="coerce")
+        if converted.notna().any():
+            df_local[column] = converted
+
+    return df_local
 
 
 def color_to_rgba(color: str, alpha: int = 200) -> list[int]:
@@ -69,15 +140,26 @@ GEOJSON_KEY = detect_geojson_key(geojson_base)
 # ======================
 df = df.dropna(how="all").copy()
 df.columns = df.columns.str.strip()
+df = standardize_decimal_columns(df)
+
+if isinstance(municipios, pd.DataFrame):
+    municipios = municipios.dropna(how="all").copy()
+    municipios.columns = municipios.columns.str.strip()
+    municipios = standardize_decimal_columns(municipios)
 
 if "Extensão (km)" in df.columns:
-    df["Extensão (km)"] = (
-        df["Extensão (km)"]
-        .astype("string")
-        .str.replace(".", "", regex=False)
-        .str.replace(",", ".", regex=False)
-    )
-    df["Extensão (km)"] = pd.to_numeric(df["Extensão (km)"], errors="coerce").fillna(0.0)
+    if not is_numeric_dtype(df["Extensão (km)"]):
+        df["Extensão (km)"] = pd.to_numeric(
+            df["Extensão (km)"]
+            .astype("string")
+            .str.replace("\u00a0", "", regex=False)
+            .str.replace(TRAILING_UNIT_PATTERN, "", regex=True)
+            .str.replace(" ", "", regex=False)
+            .str.replace(THOUSANDS_SEPARATOR_PATTERN, "", regex=True)
+            .str.replace(",", ".", regex=False),
+            errors="coerce",
+        )
+    df["Extensão (km)"] = df["Extensão (km)"].fillna(0.0)
 
 for col in ["Município", "Região", "STATUS", "Pavimento"]:
     if col in df.columns:
