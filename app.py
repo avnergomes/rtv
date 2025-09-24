@@ -131,9 +131,43 @@ def detect_geojson_key(geojson: dict) -> str:
     return next(iter(properties.keys()), "")
 
 
+def build_geojson_lookup(geojson: dict, key: str) -> dict[int, str]:
+    lookup: dict[int, str] = {}
+    for feature in geojson.get("features", []):
+        properties = feature.get("properties", {})
+        raw_code = properties.get(key) if key else None
+        if raw_code is None:
+            for candidate_value in properties.values():
+                try:
+                    int(float(candidate_value))
+                    raw_code = candidate_value
+                    break
+                except (TypeError, ValueError):
+                    continue
+        if raw_code is None:
+            continue
+        try:
+            code = int(float(raw_code))
+        except (TypeError, ValueError):
+            continue
+
+        name = (
+            properties.get("Município")
+            or properties.get("NM_MUN")
+            or properties.get("NM_MUNICIP")
+            or properties.get("NOME_MUNI")
+            or properties.get("NM_NN")
+            or str(raw_code)
+        )
+        lookup[code] = str(name).strip()
+    return lookup
+
+
 df, municipios = load_data()
 geojson_base = load_geojson("mun_PR.json")
 GEOJSON_KEY = detect_geojson_key(geojson_base)
+MUNICIPIOS_LOOKUP = build_geojson_lookup(geojson_base, GEOJSON_KEY)
+TOTAL_MUNICIPIOS_PR = len(MUNICIPIOS_LOOKUP)
 
 # ======================
 # LIMPEZA DE DADOS
@@ -244,7 +278,25 @@ if status_filtro:
     df_filtered = df_filtered[df_filtered["STATUS"].isin(status_filtro)]
 
 st.sidebar.markdown("---")
-st.sidebar.metric("RTVs selecionadas", len(df_filtered))
+rtvs_selecionadas = len(df_filtered)
+municipios_filtrados = (
+    df_filtered["Município"].nunique()
+    if "Município" in df_filtered.columns
+    else 0
+)
+
+st.sidebar.metric("RTVs selecionadas", format_number(rtvs_selecionadas))
+if TOTAL_MUNICIPIOS_PR:
+    cobertura_atual = (
+        municipios_filtrados / TOTAL_MUNICIPIOS_PR * 100
+        if TOTAL_MUNICIPIOS_PR
+        else 0
+    )
+    st.sidebar.metric(
+        "Municípios com RTVs (filtro)",
+        f"{format_number(municipios_filtrados)} de {format_number(TOTAL_MUNICIPIOS_PR)}",
+        delta=f"{cobertura_atual:.1f}% do estado",
+    )
 if not df_filtered.empty:
     st.sidebar.download_button(
         "⬇️ Baixar dados filtrados",
@@ -260,12 +312,19 @@ else:
 # ======================
 st.title("📊 Dashboard de Monitoramento de RTVs")
 st.markdown("### Visão geral dos Relatórios Técnicos de Vistoria (RTVs)")
-st.caption("Atualizado automaticamente a cada 10 minutos a partir da planilha oficial do IDR-Paraná.")
+st.caption("Atualizado automaticamente a cada 10 minutos a partir da planilha oficial do IDR-PR.")
 
 if df_filtered.empty:
     st.warning("Não há registros que atendam aos filtros selecionados.")
 else:
-    municipios_base_total = int(municipios.shape[0]) if isinstance(municipios, pd.DataFrame) else None
+    municipios_base_total = (
+        TOTAL_MUNICIPIOS_PR
+        or (
+            int(municipios.shape[0])
+            if isinstance(municipios, pd.DataFrame)
+            else None
+        )
+    )
     overview_tab, distribuicao_tab, mapa_tab = st.tabs(
         ["Visão geral", "Distribuições", "Mapa e tabela"]
     )
@@ -283,9 +342,15 @@ else:
         col1.metric("📄 Total de RTVs", format_number(total_rtv))
         col2.metric("📏 Extensão total (km)", format_number(extensao_total, 2))
         if municipios_base_total:
+            cobertura_pct = (
+                municipios_total / municipios_base_total * 100
+                if municipios_base_total
+                else 0
+            )
             col3.metric(
                 "🏘 Municípios atendidos",
                 f"{format_number(municipios_total)} de {format_number(municipios_base_total)}",
+                delta=f"Cobertura: {cobertura_pct:.1f}%",
             )
         else:
             col3.metric("🏘 Municípios atendidos", format_number(municipios_total))
@@ -503,6 +568,17 @@ else:
             map_data["Extensao_km"] = map_data["Extensao_km"].round(2)
             map_data["Qtd_RTVs"] = map_data["Qtd_RTVs"].astype(int)
 
+        municipios_sem_registro: list[str] = []
+        if TOTAL_MUNICIPIOS_PR:
+            registrados = set(map_data["CodIBGE"].tolist()) if not map_data.empty else set()
+            municipios_sem_registro = sorted(
+                {
+                    MUNICIPIOS_LOOKUP[codigo]
+                    for codigo in MUNICIPIOS_LOOKUP.keys()
+                    if codigo not in registrados and MUNICIPIOS_LOOKUP.get(codigo)
+                }
+            )
+
         col_mapa, col_tabela = st.columns((3, 2), gap="large")
 
         with col_mapa:
@@ -546,7 +622,12 @@ else:
                             f"{info['Município']}\nExtensão: {info['Extensao_km']:.2f} km\nRTVs: {info['Qtd_RTVs']}"
                         )
                     else:
-                        nome_padrao = props.get("Município") or props.get("NM_MUN") or "Sem registro"
+                        nome_padrao = (
+                            MUNICIPIOS_LOOKUP.get(cod)
+                            or props.get("Município")
+                            or props.get("NM_MUN")
+                            or "Sem registro"
+                        )
                         props["Extensao_km"] = 0.0
                         props["Qtd_RTVs"] = 0
                         props["fillColor"] = [220, 220, 220, 80]
@@ -609,6 +690,18 @@ else:
                     file_name="rtvs_por_municipio.csv",
                     mime="text/csv",
                 )
+
+                if municipios_sem_registro:
+                    st.caption(
+                        f"{len(municipios_sem_registro)} municípios do Paraná não possuem RTV registrada nos filtros atuais."
+                    )
+                    with st.expander("Municípios sem RTV registrada"):
+                        st.dataframe(
+                            pd.DataFrame(
+                                {"Município": municipios_sem_registro}
+                            ),
+                            use_container_width=True,
+                        )
 
                 colunas_detalhe = [
                     col
