@@ -9,6 +9,7 @@ import pydeck as pdk
 import streamlit as st
 from pandas.api.types import is_categorical_dtype, is_numeric_dtype
 from plotly.colors import sample_colorscale, sequential
+from pydeck.data_utils import viewport_helpers
 
 st.set_page_config(page_title="Dashboard RTVs", layout="wide")
 
@@ -131,24 +132,28 @@ def detect_geojson_key(geojson: dict) -> str:
     return next(iter(properties.keys()), "")
 
 
+def extract_geojson_code(feature: dict, key: str):
+    properties = feature.get("properties", {})
+    raw_code = properties.get(key) if key else None
+    if raw_code is None:
+        for candidate_value in properties.values():
+            try:
+                return int(float(candidate_value)), candidate_value
+            except (TypeError, ValueError):
+                continue
+        return None, None
+    try:
+        return int(float(raw_code)), raw_code
+    except (TypeError, ValueError):
+        return None, raw_code
+
+
 def build_geojson_lookup(geojson: dict, key: str) -> dict[int, str]:
     lookup: dict[int, str] = {}
     for feature in geojson.get("features", []):
         properties = feature.get("properties", {})
-        raw_code = properties.get(key) if key else None
-        if raw_code is None:
-            for candidate_value in properties.values():
-                try:
-                    int(float(candidate_value))
-                    raw_code = candidate_value
-                    break
-                except (TypeError, ValueError):
-                    continue
-        if raw_code is None:
-            continue
-        try:
-            code = int(float(raw_code))
-        except (TypeError, ValueError):
+        code, raw_code = extract_geojson_code(feature, key)
+        if code is None:
             continue
 
         name = (
@@ -157,16 +162,87 @@ def build_geojson_lookup(geojson: dict, key: str) -> dict[int, str]:
             or properties.get("NM_MUNICIP")
             or properties.get("NOME_MUNI")
             or properties.get("NM_NN")
-            or str(raw_code)
+            or str(code)
         )
         lookup[code] = str(name).strip()
     return lookup
+
+
+def iter_lon_lat_pairs(values):
+    if isinstance(values, (list, tuple)):
+        if len(values) >= 2 and all(isinstance(v, (int, float)) for v in values[:2]):
+            yield float(values[0]), float(values[1])
+        else:
+            for item in values:
+                yield from iter_lon_lat_pairs(item)
+
+
+def compute_bounds_from_coordinates(coordinates):
+    min_lon = min_lat = max_lon = max_lat = None
+    for lon, lat in iter_lon_lat_pairs(coordinates):
+        if min_lon is None:
+            min_lon = max_lon = lon
+            min_lat = max_lat = lat
+            continue
+        min_lon = min(min_lon, lon)
+        max_lon = max(max_lon, lon)
+        min_lat = min(min_lat, lat)
+        max_lat = max(max_lat, lat)
+    if min_lon is None:
+        return None
+    return (min_lon, min_lat, max_lon, max_lat)
+
+
+def merge_bounds(bounds_a, bounds_b):
+    if bounds_a is None:
+        return bounds_b
+    if bounds_b is None:
+        return bounds_a
+    return (
+        min(bounds_a[0], bounds_b[0]),
+        min(bounds_a[1], bounds_b[1]),
+        max(bounds_a[2], bounds_b[2]),
+        max(bounds_a[3], bounds_b[3]),
+    )
+
+
+def build_geojson_bounds_lookup(geojson: dict, key: str):
+    bounds_lookup: dict[int, tuple[float, float, float, float]] = {}
+    overall_bounds = None
+    for feature in geojson.get("features", []):
+        geometry = feature.get("geometry") or {}
+        bounds = compute_bounds_from_coordinates(geometry.get("coordinates"))
+        overall_bounds = merge_bounds(overall_bounds, bounds)
+        if bounds is None:
+            continue
+        code, _ = extract_geojson_code(feature, key)
+        if code is None or code in bounds_lookup:
+            continue
+        bounds_lookup[code] = bounds
+    return bounds_lookup, overall_bounds
+
+
+def bounds_to_points(bounds):
+    if not bounds:
+        return []
+    min_lon, min_lat, max_lon, max_lat = bounds
+    if min_lon == max_lon and min_lat == max_lat:
+        return [[min_lon, min_lat]]
+    return [
+        [min_lon, min_lat],
+        [min_lon, max_lat],
+        [max_lon, min_lat],
+        [max_lon, max_lat],
+    ]
 
 
 df, municipios = load_data()
 geojson_base = load_geojson("mun_PR.json")
 GEOJSON_KEY = detect_geojson_key(geojson_base)
 MUNICIPIOS_LOOKUP = build_geojson_lookup(geojson_base, GEOJSON_KEY)
+GEOJSON_BOUNDS_LOOKUP, GEOJSON_TOTAL_BOUNDS = build_geojson_bounds_lookup(
+    geojson_base, GEOJSON_KEY
+)
 TOTAL_MUNICIPIOS_PR = len(MUNICIPIOS_LOOKUP)
 
 # ======================
@@ -589,6 +665,15 @@ else:
                 map_dict = map_data.set_index("CodIBGE")[
                     ["Município", "Extensao_km", "Qtd_RTVs"]
                 ].to_dict("index")
+                selected_codes = set(map_data["CodIBGE"].tolist())
+                combined_bounds = None
+                for code in selected_codes:
+                    code_bounds = GEOJSON_BOUNDS_LOOKUP.get(code)
+                    if code_bounds is None:
+                        continue
+                    combined_bounds = merge_bounds(combined_bounds, code_bounds)
+                if combined_bounds is None:
+                    combined_bounds = GEOJSON_TOTAL_BOUNDS
 
                 coluna_color = (
                     "Extensao_km"
@@ -645,6 +730,20 @@ else:
                 )
 
                 view_state = pdk.ViewState(latitude=-24.5, longitude=-51.5, zoom=6)
+                view_points = bounds_to_points(combined_bounds)
+                if view_points:
+                    computed_view = viewport_helpers.compute_view(view_points)
+                    zoom_value = computed_view.zoom
+                    if zoom_value is not None:
+                        max_zoom = 11.0
+                        min_zoom = 5.5 if len(selected_codes) > 3 else 6.0
+                        computed_view.zoom = max(
+                            min(zoom_value, max_zoom),
+                            min_zoom,
+                        )
+                    computed_view.pitch = 0
+                    computed_view.bearing = 0
+                    view_state = computed_view
 
                 st.pydeck_chart(
                     pdk.Deck(
