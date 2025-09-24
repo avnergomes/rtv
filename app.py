@@ -388,7 +388,7 @@ else:
 # ======================
 st.title("📊 Dashboard de Monitoramento de RTVs")
 st.markdown("### Visão geral dos Relatórios Técnicos de Vistoria (RTVs)")
-st.caption("Atualizado automaticamente a cada 10 minutos a partir da planilha oficial do IDR-PR.")
+st.caption("Atualizado automaticamente a cada 10 minutos a partir da planilha oficial do IDR-Paraná.")
 
 if df_filtered.empty:
     st.warning("Não há registros que atendam aos filtros selecionados.")
