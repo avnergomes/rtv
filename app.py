@@ -320,6 +320,8 @@ if "STATUS" in df.columns and is_categorical_dtype(df["STATUS"]):
 else:
     status_options = sorted(df["STATUS"].dropna().unique()) if "STATUS" in df.columns else []
 
+municipios_base_total_regioes = None
+
 with st.sidebar.expander("Configurar filtros", expanded=True):
     regioes = st.multiselect(
         "Região",
@@ -327,6 +329,8 @@ with st.sidebar.expander("Configurar filtros", expanded=True):
     )
 
     municipios_base = df[df["Região"].isin(regioes)] if regioes else df
+    if "Município" in municipios_base.columns:
+        municipios_base_total_regioes = municipios_base["Município"].nunique()
     municipios_filtro = st.multiselect(
         "Município",
         options=sorted(municipios_base["Município"].dropna().unique()) if "Município" in municipios_base.columns else [],
@@ -393,7 +397,7 @@ st.caption("Atualizado automaticamente a cada 10 minutos a partir da planilha of
 if df_filtered.empty:
     st.warning("Não há registros que atendam aos filtros selecionados.")
 else:
-    municipios_base_total = (
+    municipios_base_total_estado = (
         TOTAL_MUNICIPIOS_PR
         or (
             int(municipios.shape[0])
@@ -417,16 +421,25 @@ else:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("📄 Total de RTVs", format_number(total_rtv))
         col2.metric("📏 Extensão total (km)", format_number(extensao_total, 2))
-        if municipios_base_total:
+        municipios_base_total_metric = municipios_base_total_estado
+        if regioes and municipios_base_total_regioes:
+            municipios_base_total_metric = municipios_base_total_regioes
+
+        if municipios_base_total_metric:
             cobertura_pct = (
-                municipios_total / municipios_base_total * 100
-                if municipios_base_total
+                municipios_total / municipios_base_total_metric * 100
+                if municipios_base_total_metric
                 else 0
+            )
+            cobertura_label = (
+                f"Cobertura na região: {cobertura_pct:.1f}%"
+                if regioes
+                else f"Cobertura: {cobertura_pct:.1f}%"
             )
             col3.metric(
                 "🏘 Municípios atendidos",
-                f"{format_number(municipios_total)} de {format_number(municipios_base_total)}",
-                delta=f"Cobertura: {cobertura_pct:.1f}%",
+                f"{format_number(municipios_total)} de {format_number(municipios_base_total_metric)}",
+                delta=cobertura_label,
             )
         else:
             col3.metric("🏘 Municípios atendidos", format_number(municipios_total))
