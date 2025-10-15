@@ -158,6 +158,7 @@ def build_geojson_lookup(geojson: dict, key: str) -> dict[int, str]:
 
         name = (
             properties.get("Município")
+            or properties.get("Municipio")
             or properties.get("NM_MUN")
             or properties.get("NM_MUNICIP")
             or properties.get("NOME_MUNI")
