@@ -278,8 +278,11 @@ for col in ["Município", "Região", "STATUS", "Pavimento"]:
 
 if "STATUS" in df.columns:
     df["STATUS"] = df["STATUS"].str.title()
-    extra_status = sorted(set(df["STATUS"].dropna()) - set(STATUS_ORDER))
-    status_categories = STATUS_ORDER + [status for status in extra_status if status not in STATUS_ORDER]
+    status_values = df["STATUS"].dropna()
+    unique_status = list(dict.fromkeys(status_values))
+    ordered_defaults = [status for status in STATUS_ORDER if status in unique_status]
+    extra_status = [status for status in unique_status if status not in ordered_defaults]
+    status_categories = ordered_defaults + extra_status
     df["STATUS"] = pd.Categorical(df["STATUS"], categories=status_categories, ordered=True)
 
 if "Região" in df.columns:
